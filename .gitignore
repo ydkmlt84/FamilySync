@@ -1,0 +1,11 @@
+node_modules/
+dist/
+coverage/
+data/
+*.log
+.env
+.yarn/*
+!.yarn/releases
+!.yarn/plugins
+!.yarn/sdks
+!.yarn/versions

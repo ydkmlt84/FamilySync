@@ -1,0 +1,16 @@
+services:
+  familysync:
+    build: .
+    container_name: familysync
+    ports:
+      - "3000:3000"
+    env_file:
+      - .env
+    environment:
+      CONFIG_DIR: /config
+    volumes:
+      - familysync-config:/config
+    restart: unless-stopped
+
+volumes:
+  familysync-config:
