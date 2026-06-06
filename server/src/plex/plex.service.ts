@@ -4,13 +4,17 @@ import {
   Injectable,
   Logger,
 } from "@nestjs/common";
-import { ConfigService } from "@nestjs/config";
 import { XMLParser } from "fast-xml-parser";
 import {
+  PLEX_BASE_URL_SETTING,
   PLEX_SERVER_IDENTIFIER_SETTING,
   PLEX_SERVER_NAME_SETTING,
   SettingsService,
 } from "../settings/settings.service";
+import { runWithConcurrency } from "../utils/async-pool";
+
+const PLEX_PRODUCT = "FamilySync";
+const PLEX_CLIENT_IDENTIFIER = "familysync";
 
 type PlexPinResponse = {
   id: number;
@@ -103,6 +107,21 @@ export type PlexLibrary = {
   count?: number;
 };
 
+export function parsePlexLibraryCount(container: {
+  totalSize?: number | string;
+  size?: number | string;
+  Metadata?: unknown[];
+}): number | undefined {
+  const value =
+    container.totalSize ?? container.size ?? container.Metadata?.length;
+  if (value === undefined || value === "") {
+    return undefined;
+  }
+
+  const count = Number(value);
+  return Number.isFinite(count) ? count : undefined;
+}
+
 export type SelectedPlexServer = {
   accessToken: string;
   clientIdentifier: string;
@@ -114,7 +133,6 @@ export class PlexService {
   private readonly logger = new Logger(PlexService.name);
 
   constructor(
-    @Inject(ConfigService) private readonly config: ConfigService,
     @Inject(SettingsService) private readonly settings: SettingsService,
   ) {}
 
@@ -208,14 +226,11 @@ export class PlexService {
         .join(", ")}`,
     );
     const plexUserId = String(account.user.id);
-    const adminPlexUserId = this.config.get<string>("plex.adminPlexUserId");
-    const candidateAdminServer = this.selectAdminCandidateServer(devices);
+    const candidateAdminServer = await this.selectAdminCandidateServer(devices);
     const isAdmin =
-      adminPlexUserId !== undefined
-        ? plexUserId === adminPlexUserId
-        : candidateAdminServer !== undefined &&
-          (Boolean(candidateAdminServer.owned) ||
-            String(candidateAdminServer.ownerId ?? "") === plexUserId);
+      candidateAdminServer !== undefined &&
+      (Boolean(candidateAdminServer.owned) ||
+        String(candidateAdminServer.ownerId ?? "") === plexUserId);
     const server = isAdmin
       ? await this.selectAndPersistAdminServer(devices)
       : await this.selectConfiguredServer(devices);
@@ -458,12 +473,39 @@ export class PlexService {
       (section: any) => section.type === "movie" || section.type === "show",
     );
 
-    return mediaSections.map((section: any) => ({
+    const libraries: PlexLibrary[] = mediaSections.map((section: any) => ({
       key: String(section.key),
       title: String(section.title ?? section.key),
       type: section.type,
       count: section.count === undefined ? undefined : Number(section.count),
     }));
+
+    await runWithConcurrency(libraries, 4, async (library) => {
+      if (library.count !== undefined) {
+        return;
+      }
+
+      try {
+        const response = await this.pmsFetch<{
+          MediaContainer?: {
+            totalSize?: number | string;
+            size?: number | string;
+            Metadata?: unknown[];
+          };
+        }>(`/library/sections/${library.key}/all`, serverAccessToken, {
+          type: library.type === "movie" ? "1" : "2",
+          "X-Plex-Container-Start": "0",
+          "X-Plex-Container-Size": "0",
+        });
+        library.count = parsePlexLibraryCount(response.MediaContainer ?? {});
+      } catch (error) {
+        this.logger.warn(
+          `Unable to load item count for Plex library ${library.key}: ${this.errorMessage(error)}`,
+        );
+      }
+    });
+
+    return libraries;
   }
 
   async listMovieLibraries(serverAccessToken: string): Promise<PlexLibrary[]> {
@@ -514,19 +556,29 @@ export class PlexService {
         { type: section.type === "movie" ? "1" : "2" },
       );
 
-      for (const item of items.MediaContainer?.Metadata ?? []) {
+      const sectionItems = (items.MediaContainer?.Metadata ?? []) as Array<{
+        ratingKey?: string | number;
+      }>;
+
+      for (const item of sectionItems) {
         if (item.ratingKey) {
           ratingKeys.add(String(item.ratingKey));
         }
+      }
 
-        if (section.type === "show" && item.ratingKey) {
+      if (section.type === "show") {
+        await runWithConcurrency(sectionItems, 4, async (item) => {
+          if (!item.ratingKey) {
+            return;
+          }
+
           for (const childKey of await this.listShowChildRatingKeys(
             String(item.ratingKey),
             serverAccessToken,
           )) {
             ratingKeys.add(childKey);
           }
-        }
+        });
       }
     }
 
@@ -577,10 +629,10 @@ export class PlexService {
   private async selectConfiguredServer(
     resources: PlexResource[],
   ): Promise<PlexResource> {
-    const serverClientIdentifier =
-      (await this.settings.get(PLEX_SERVER_IDENTIFIER_SETTING)) ??
-      this.config.get<string>("plex.serverClientIdentifier");
-    const serverName = this.config.get<string>("plex.serverName");
+    const serverClientIdentifier = await this.settings.get(
+      PLEX_SERVER_IDENTIFIER_SETTING,
+    );
+    const serverName = await this.settings.get(PLEX_SERVER_NAME_SETTING);
     const servers = resources.filter(
       (resource) =>
         resource.product === "Plex Media Server" &&
@@ -602,7 +654,7 @@ export class PlexService {
       throw new BadRequestException(
         configured
           ? `This Plex account does not have access to the configured Plex server (${configured}).`
-          : "The Plex server has not been selected yet. Link the Plex server admin account first.",
+          : "The Plex server has not been selected yet. Complete the setup wizard with the Plex server owner account first.",
       );
     }
 
@@ -615,10 +667,10 @@ export class PlexService {
   private async selectAndPersistAdminServer(
     resources: PlexResource[],
   ): Promise<PlexResource> {
-    const configuredIdentifier =
-      (await this.settings.get(PLEX_SERVER_IDENTIFIER_SETTING)) ??
-      this.config.get<string>("plex.serverClientIdentifier");
-    const configuredName = this.config.get<string>("plex.serverName");
+    const configuredIdentifier = await this.settings.get(
+      PLEX_SERVER_IDENTIFIER_SETTING,
+    );
+    const configuredName = await this.settings.get(PLEX_SERVER_NAME_SETTING);
     const servers = resources.filter(
       (resource) =>
         resource.product === "Plex Media Server" &&
@@ -635,7 +687,7 @@ export class PlexService {
     if (!server) {
       throw new BadRequestException(
         ownedServers.length > 1
-          ? "Admin account owns multiple Plex servers. Set PLEX_SERVER_IDENTIFIER before linking."
+          ? "This Plex account owns multiple Plex servers. Support for choosing among them is not available yet."
           : "No owned Plex Media Server was returned for the admin account.",
       );
     }
@@ -651,13 +703,13 @@ export class PlexService {
     return server;
   }
 
-  private selectAdminCandidateServer(
+  private async selectAdminCandidateServer(
     resources: PlexResource[],
-  ): PlexResource | undefined {
-    const configuredIdentifier = this.config.get<string>(
-      "plex.serverClientIdentifier",
+  ): Promise<PlexResource | undefined> {
+    const configuredIdentifier = await this.settings.get(
+      PLEX_SERVER_IDENTIFIER_SETTING,
     );
-    const configuredName = this.config.get<string>("plex.serverName");
+    const configuredName = await this.settings.get(PLEX_SERVER_NAME_SETTING);
     const servers = resources.filter(
       (resource) =>
         resource.product === "Plex Media Server" &&
@@ -673,15 +725,77 @@ export class PlexService {
     );
   }
 
+  async listServerConnections(accountToken: string): Promise<{
+    serverName?: string;
+    clientIdentifier?: string;
+    currentBaseUrl?: string;
+    candidates: Array<{ uri: string; local: boolean }>;
+  }> {
+    const resources = await this.plexResources(accountToken);
+    const server = await this.selectAdminCandidateServer(
+      resources.MediaContainer.Device ?? [],
+    );
+    const currentBaseUrl = await this.settings.get(PLEX_BASE_URL_SETTING);
+
+    if (!server) {
+      return { currentBaseUrl, candidates: [] };
+    }
+
+    const seen = new Set<string>();
+    const candidates = (server.connections ?? [])
+      .map((connection) => ({
+        uri: connection.uri.replace(/\/+$/, ""),
+        local: Boolean(connection.local),
+      }))
+      .filter((connection) => {
+        if (!connection.uri || seen.has(connection.uri)) {
+          return false;
+        }
+        seen.add(connection.uri);
+        return true;
+      });
+
+    return {
+      serverName: server.name,
+      clientIdentifier: server.clientIdentifier,
+      currentBaseUrl,
+      candidates,
+    };
+  }
+
+  async testServerBaseUrl(
+    uri: string,
+    serverToken: string,
+  ): Promise<{ ok: boolean; serverName?: string }> {
+    const normalized = uri.replace(/\/+$/, "");
+
+    try {
+      const identity = await this.plexFetch<{
+        MediaContainer?: { friendlyName?: string; machineIdentifier?: string };
+      }>(`${normalized}/identity`, { token: serverToken });
+      return {
+        ok: true,
+        serverName: identity.MediaContainer?.friendlyName,
+      };
+    } catch {
+      return { ok: false };
+    }
+  }
+
   private async pmsFetch<T>(
     path: string,
     token: string,
     params: Record<string, string> = {},
   ): Promise<T> {
-    const baseUrl = this.config.get<string>("plex.baseUrl");
+    const baseUrl = (await this.settings.get(PLEX_BASE_URL_SETTING))?.replace(
+      /\/+$/,
+      "",
+    );
 
     if (!baseUrl) {
-      throw new BadRequestException("PLEX_BASE_URL is required.");
+      throw new BadRequestException(
+        "Plex base URL is not configured. Complete the setup wizard.",
+      );
     }
 
     const url = new URL(`${baseUrl}${path}`);
@@ -831,11 +945,11 @@ export class PlexService {
   }
 
   private get product(): string {
-    return this.config.getOrThrow<string>("plex.product");
+    return PLEX_PRODUCT;
   }
 
   private get clientIdentifier(): string {
-    return this.config.getOrThrow<string>("plex.clientIdentifier");
+    return PLEX_CLIENT_IDENTIFIER;
   }
 
   private errorMessage(error: unknown): string {

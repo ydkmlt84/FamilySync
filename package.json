@@ -6,6 +6,7 @@
   "description": "FamilySync is a Plex companion service for aggregating linked-user movie ratings.",
   "scripts": {
     "dev": "concurrently \"yarn dev:server\" \"yarn dev:web\"",
+    "dev:reset": "tsx scripts/reset-dev-db.ts",
     "dev:server": "tsx watch --tsconfig server/tsconfig.json server/src/main.ts",
     "dev:web": "vite --host 0.0.0.0",
     "build": "yarn build:server && yarn build:web",

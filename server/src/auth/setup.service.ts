@@ -1,93 +1,94 @@
 import {
-  ForbiddenException,
   Inject,
   Injectable,
   ServiceUnavailableException,
 } from "@nestjs/common";
-import { ConfigService } from "@nestjs/config";
-import { createHash, timingSafeEqual } from "node:crypto";
+import { PlexService } from "../plex/plex.service";
 import {
+  PLEX_BASE_URL_SETTING,
   SETUP_COMPLETED_SETTING,
   SettingsService,
 } from "../settings/settings.service";
 import { UsersService } from "../users/users.service";
 
+export type SetupStatus = {
+  setupRequired: boolean;
+  needsFirstAdmin: boolean;
+  serverConfigured: boolean;
+};
+
 @Injectable()
 export class SetupService {
-  private setupPin?: { pinId: number; expiresAt: number };
-
   constructor(
-    @Inject(ConfigService) private readonly config: ConfigService,
     @Inject(UsersService) private readonly users: UsersService,
     @Inject(SettingsService) private readonly settings: SettingsService,
+    @Inject(PlexService) private readonly plex: PlexService,
   ) {}
 
-  async status(): Promise<{ setupRequired: boolean }> {
-    return { setupRequired: await this.isSetupRequired() };
-  }
+  async status(): Promise<SetupStatus> {
+    const completed =
+      (await this.settings.get(SETUP_COMPLETED_SETTING)) === "true";
+    const hasAdmin = await this.hasAdmin();
+    const serverConfigured = await this.isServerConfigured();
+    const ready = completed || (hasAdmin && serverConfigured);
 
-  async authorizeInitialSetup(
-    pinId: number,
-    providedToken?: string,
-  ): Promise<boolean> {
-    if (!(await this.isSetupRequired())) {
-      this.setupPin = undefined;
-      return false;
+    if (ready && !completed) {
+      await this.settings.set(SETUP_COMPLETED_SETTING, "true");
     }
 
-    const configuredToken = this.config.get<string>("setupToken");
+    return {
+      setupRequired: !ready,
+      needsFirstAdmin: !hasAdmin,
+      serverConfigured,
+    };
+  }
 
-    if (!configuredToken || configuredToken.length < 32) {
+  async needsFirstAdmin(): Promise<boolean> {
+    return !(await this.hasAdmin());
+  }
+
+  async completeServerSetup(): Promise<void> {
+    if ((await this.hasAdmin()) && (await this.isServerConfigured())) {
+      await this.settings.set(SETUP_COMPLETED_SETTING, "true");
+    }
+  }
+
+  async listServerCandidates() {
+    const admin = await this.users.findLinkedAdminWithAccountToken();
+
+    if (!admin?.plexAccountToken) {
       throw new ServiceUnavailableException(
-        "Initial setup is locked. Configure SETUP_TOKEN with at least 32 characters or set PLEX_ADMIN_USER_ID.",
+        "No linked admin account is available to query Plex.",
       );
     }
 
-    if (!providedToken || !this.matches(configuredToken, providedToken)) {
-      throw new ForbiddenException("Invalid setup token.");
-    }
-
-    const now = Date.now();
-
-    if (
-      this.setupPin &&
-      this.setupPin.expiresAt > now &&
-      this.setupPin.pinId !== pinId
-    ) {
-      throw new ForbiddenException("Initial setup is already in progress.");
-    }
-
-    this.setupPin = { pinId, expiresAt: now + 10 * 60 * 1000 };
-    return true;
+    return this.plex.listServerConnections(admin.plexAccountToken);
   }
 
-  async completeInitialSetup(pinId: number): Promise<void> {
-    await this.settings.set(SETUP_COMPLETED_SETTING, "true");
-    this.releaseInitialSetup(pinId);
-  }
+  async testServerConnection(uri: string) {
+    const admin = await this.users.findLinkedAdminWithAccountToken();
 
-  releaseInitialSetup(pinId: number): void {
-    if (this.setupPin?.pinId === pinId) {
-      this.setupPin = undefined;
-    }
-  }
-
-  private async isSetupRequired(): Promise<boolean> {
-    if ((await this.settings.get(SETUP_COMPLETED_SETTING)) === "true") {
-      return false;
+    if (!admin?.plexToken) {
+      throw new ServiceUnavailableException(
+        "No linked admin account is available to test the connection.",
+      );
     }
 
-    if (await this.users.findAdmin()) {
-      await this.settings.set(SETUP_COMPLETED_SETTING, "true");
-      return false;
-    }
-
-    return !this.config.get<string>("plex.adminPlexUserId");
+    return this.plex.testServerBaseUrl(uri, admin.plexToken);
   }
 
-  private matches(expected: string, provided: string): boolean {
-    const expectedHash = createHash("sha256").update(expected).digest();
-    const providedHash = createHash("sha256").update(provided).digest();
-    return timingSafeEqual(expectedHash, providedHash);
+  async saveServerBaseUrl(baseUrl: string): Promise<SetupStatus> {
+    const normalized = baseUrl.replace(/\/+$/, "");
+    await this.settings.set(PLEX_BASE_URL_SETTING, normalized);
+    await this.completeServerSetup();
+    return this.status();
+  }
+
+  private async hasAdmin(): Promise<boolean> {
+    return Boolean(await this.users.findAdmin());
+  }
+
+  private async isServerConfigured(): Promise<boolean> {
+    return Boolean(await this.settings.get(PLEX_BASE_URL_SETTING));
   }
 }

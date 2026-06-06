@@ -6,6 +6,7 @@ import { AppSetting } from "./app-setting.entity";
 
 export const PLEX_SERVER_IDENTIFIER_SETTING = "plex.serverIdentifier";
 export const PLEX_SERVER_NAME_SETTING = "plex.serverName";
+export const PLEX_BASE_URL_SETTING = "plex.baseUrl";
 export const PLEX_SELECTED_MOVIE_LIBRARY_KEYS_SETTING =
   "plex.selectedMovieLibraryKeys";
 export const PLEX_SELECTED_TV_LIBRARY_KEYS_SETTING =

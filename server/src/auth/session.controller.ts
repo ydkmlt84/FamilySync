@@ -13,6 +13,7 @@ import { toLinkedUserResponse } from "../users/linked-user-response.dto";
 import { UsersService } from "../users/users.service";
 import type { AuthenticatedRequest } from "./authenticated-request";
 import { AuthGuard } from "./auth.guard";
+import { SessionCookieService } from "./session-cookie.service";
 import { SESSION_COOKIE_NAME, SessionsService } from "./sessions.service";
 
 @Controller("auth")
@@ -20,6 +21,8 @@ export class SessionController {
   constructor(
     @Inject(SessionsService) private readonly sessions: SessionsService,
     @Inject(UsersService) private readonly users: UsersService,
+    @Inject(SessionCookieService)
+    private readonly sessionCookie: SessionCookieService,
   ) {}
 
   @Get("me")
@@ -36,7 +39,7 @@ export class SessionController {
     await this.sessions.revokeToken(
       request.cookies?.[SESSION_COOKIE_NAME] as string | undefined,
     );
-    response.clearCookie(SESSION_COOKIE_NAME, { path: "/" });
+    this.sessionCookie.clear(response);
     return { loggedOut: true };
   }
 
@@ -52,7 +55,7 @@ export class SessionController {
 
     await this.sessions.revokeUserSessions(request.user.id);
     await this.users.remove(request.user.id);
-    response.clearCookie(SESSION_COOKIE_NAME, { path: "/" });
+    this.sessionCookie.clear(response);
     return { removed: true };
   }
 }

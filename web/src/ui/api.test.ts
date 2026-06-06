@@ -7,40 +7,100 @@ describe("setup API", () => {
   });
 
   it("loads setup status", async () => {
+    const status = {
+      setupRequired: true,
+      needsFirstAdmin: true,
+      serverConfigured: false,
+    };
     const fetchMock = vi.fn().mockResolvedValue({
       ok: true,
-      json: vi.fn().mockResolvedValue({ setupRequired: true }),
+      json: vi.fn().mockResolvedValue(status),
     });
     vi.stubGlobal("fetch", fetchMock);
 
-    await expect(api.getSetupStatus()).resolves.toEqual({
-      setupRequired: true,
-    });
+    await expect(api.getSetupStatus()).resolves.toEqual(status);
     expect(fetchMock).toHaveBeenCalledWith(
       "/api/auth/plex/setup",
       expect.any(Object),
     );
   });
 
-  it("sends the setup token only in the polling header", async () => {
+  it("polls a PIN without sending a setup token", async () => {
     const fetchMock = vi.fn().mockResolvedValue({
       ok: true,
       json: vi.fn().mockResolvedValue({ linked: false }),
     });
     vi.stubGlobal("fetch", fetchMock);
 
-    await api.pollPin(123, "setup-secret");
+    await api.pollPin(123);
 
     expect(fetchMock).toHaveBeenCalledWith(
       "/api/auth/plex/pin/123",
+      expect.any(Object),
+    );
+    expect(JSON.stringify(fetchMock.mock.calls)).not.toContain("Setup-Token");
+  });
+
+  it("lists server candidates", async () => {
+    const candidates = {
+      serverName: "Home",
+      clientIdentifier: "abc",
+      currentBaseUrl: undefined,
+      candidates: [{ uri: "http://plex:32400", local: true }],
+    };
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: vi.fn().mockResolvedValue(candidates),
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(api.getServerCandidates()).resolves.toEqual(candidates);
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/api/auth/plex/server-candidates",
+      expect.any(Object),
+    );
+  });
+
+  it("tests a server connection", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: vi.fn().mockResolvedValue({ ok: true, serverName: "Home" }),
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(
+      api.testServerConnection("http://plex:32400"),
+    ).resolves.toEqual({ ok: true, serverName: "Home" });
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/api/auth/plex/test-connection",
       expect.objectContaining({
-        headers: expect.objectContaining({
-          "X-Setup-Token": "setup-secret",
-        }),
+        method: "POST",
+        body: JSON.stringify({ uri: "http://plex:32400" }),
       }),
     );
-    expect(JSON.stringify(fetchMock.mock.calls)).not.toContain(
-      '"body":"setup-secret"',
+  });
+
+  it("saves the server config", async () => {
+    const status = {
+      setupRequired: false,
+      needsFirstAdmin: false,
+      serverConfigured: true,
+    };
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: vi.fn().mockResolvedValue(status),
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(api.saveServerConfig("http://plex:32400")).resolves.toEqual(
+      status,
+    );
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/api/auth/plex/server-config",
+      expect.objectContaining({
+        method: "POST",
+        body: JSON.stringify({ baseUrl: "http://plex:32400" }),
+      }),
     );
   });
 });

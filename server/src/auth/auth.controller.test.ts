@@ -3,10 +3,10 @@ import { describe, expect, it, vi } from "vitest";
 import { AuthController } from "./auth.controller";
 
 function makeController({
-  initialSetup = false,
+  needsFirstAdmin = false,
   resolved,
 }: {
-  initialSetup?: boolean;
+  needsFirstAdmin?: boolean;
   resolved?: object;
 } = {}) {
   const plex = {
@@ -30,10 +30,22 @@ function makeController({
     }),
   };
   const setup = {
-    status: vi.fn().mockResolvedValue({ setupRequired: initialSetup }),
-    authorizeInitialSetup: vi.fn().mockResolvedValue(initialSetup),
-    completeInitialSetup: vi.fn(),
-    releaseInitialSetup: vi.fn(),
+    status: vi.fn().mockResolvedValue({
+      setupRequired: needsFirstAdmin,
+      needsFirstAdmin,
+      serverConfigured: false,
+    }),
+    needsFirstAdmin: vi.fn().mockResolvedValue(needsFirstAdmin),
+    listServerCandidates: vi.fn(),
+    testServerConnection: vi.fn(),
+    saveServerBaseUrl: vi.fn().mockResolvedValue({
+      setupRequired: false,
+      needsFirstAdmin: false,
+      serverConfigured: true,
+    }),
+  };
+  const sessionCookie = {
+    set: vi.fn(),
   };
   return {
     controller: new AuthController(
@@ -41,29 +53,36 @@ function makeController({
       users as never,
       sessions as never,
       setup as never,
+      sessionCookie as never,
     ),
     plex,
     users,
     sessions,
     setup,
+    sessionCookie,
   };
 }
 
 describe("AuthController setup protection", () => {
-  it("returns setup status and pending PIN state", async () => {
-    const { controller, setup } = makeController({ initialSetup: true });
+  it("returns the setup status", async () => {
+    const { controller } = makeController({ needsFirstAdmin: true });
     await expect(controller.setupStatus()).resolves.toEqual({
       setupRequired: true,
+      needsFirstAdmin: true,
+      serverConfigured: false,
     });
+  });
+
+  it("reports an unresolved PIN as not linked", async () => {
+    const { controller } = makeController({ needsFirstAdmin: true });
     await expect(
-      controller.pollPin("1", "a".repeat(32), { cookie: vi.fn() } as never),
+      controller.pollPin("1", { cookie: vi.fn() } as never),
     ).resolves.toEqual({ linked: false });
-    expect(setup.authorizeInitialSetup).toHaveBeenCalledWith(1, "a".repeat(32));
   });
 
   it("rejects a non-owner during initial setup", async () => {
-    const { controller, setup, users } = makeController({
-      initialSetup: true,
+    const { controller, users } = makeController({
+      needsFirstAdmin: true,
       resolved: {
         plexUserId: "1",
         plexUsername: "User",
@@ -76,32 +95,28 @@ describe("AuthController setup protection", () => {
     });
 
     await expect(
-      controller.pollPin("1", "a".repeat(32), { cookie: vi.fn() } as never),
+      controller.pollPin("1", { cookie: vi.fn() } as never),
     ).rejects.toBeInstanceOf(ForbiddenException);
-    expect(setup.releaseInitialSetup).toHaveBeenCalledWith(1);
     expect(users.upsertFromPlex).not.toHaveBeenCalled();
   });
 
-  it("links the Plex owner and creates a session", async () => {
+  it("links the Plex owner and creates a session without completing setup", async () => {
     const response = { cookie: vi.fn() };
-    const { controller, users, sessions, setup } = makeController({
-      initialSetup: true,
-      resolved: {
-        plexUserId: "1",
-        plexUsername: "Owner",
-        serverAccessToken: "server-token",
-        accountToken: "account-token",
-        serverClientIdentifier: "server",
-        serverName: "Home",
-        isAdmin: true,
-      },
-    });
+    const { controller, users, sessions, setup, sessionCookie } =
+      makeController({
+        needsFirstAdmin: true,
+        resolved: {
+          plexUserId: "1",
+          plexUsername: "Owner",
+          serverAccessToken: "server-token",
+          accountToken: "account-token",
+          serverClientIdentifier: "server",
+          serverName: "Home",
+          isAdmin: true,
+        },
+      });
 
-    const result = await controller.pollPin(
-      "1",
-      "a".repeat(32),
-      response as never,
-    );
+    const result = await controller.pollPin("1", response as never);
 
     expect(result).toMatchObject({
       linked: true,
@@ -109,20 +124,42 @@ describe("AuthController setup protection", () => {
     });
     expect(result).not.toHaveProperty("user.plexToken");
     expect(users.upsertFromPlex).toHaveBeenCalled();
-    expect(setup.completeInitialSetup).toHaveBeenCalledWith(1);
     expect(sessions.create).toHaveBeenCalled();
-    expect(response.cookie).toHaveBeenCalled();
+    expect(sessionCookie.set).toHaveBeenCalledWith(
+      response,
+      "session-token",
+      new Date("2026-07-01T00:00:00Z"),
+    );
+    // Completion is deferred to the server-config step.
+    expect(setup.saveServerBaseUrl).not.toHaveBeenCalled();
   });
 
-  it("releases the setup claim when Plex resolution fails", async () => {
-    const { controller, plex, setup } = makeController({
-      initialSetup: true,
+  it("links additional non-owner users once an admin exists", async () => {
+    const response = { cookie: vi.fn() };
+    const { controller, users } = makeController({
+      needsFirstAdmin: false,
+      resolved: {
+        plexUserId: "2",
+        plexUsername: "Family",
+        serverAccessToken: "server-token",
+        accountToken: "account-token",
+        serverClientIdentifier: "server",
+        serverName: "Home",
+        isAdmin: false,
+      },
     });
-    plex.pollPin.mockRejectedValue(new Error("Plex failed"));
 
+    const result = await controller.pollPin("1", response as never);
+
+    expect(result).toMatchObject({ linked: true });
+    expect(users.upsertFromPlex).toHaveBeenCalled();
+  });
+
+  it("saves the chosen Plex base URL", async () => {
+    const { controller, setup } = makeController();
     await expect(
-      controller.pollPin("1", "a".repeat(32), { cookie: vi.fn() } as never),
-    ).rejects.toThrow("Plex failed");
-    expect(setup.releaseInitialSetup).toHaveBeenCalledWith(1);
+      controller.saveServerConfig({ baseUrl: "http://plex:32400/" }),
+    ).resolves.toMatchObject({ setupRequired: false });
+    expect(setup.saveServerBaseUrl).toHaveBeenCalledWith("http://plex:32400/");
   });
 });

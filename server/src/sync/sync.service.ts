@@ -16,6 +16,7 @@ import {
   TAG_SYNC_JOB_SETTING,
 } from "../settings/settings.service";
 import { UsersService } from "../users/users.service";
+import { runWithConcurrency } from "../utils/async-pool";
 
 export type SyncJobStatus = {
   id: string;
@@ -47,11 +48,14 @@ export type CronJobSettings = {
   cron: string;
 };
 
+const NO_LIBRARIES_SELECTED = "__none__";
+
 @Injectable()
 export class SyncService {
   private readonly logger = new Logger(SyncService.name);
   private readonly jobs = new Map<string, SyncJobStatus>();
   private readonly recentScanMaxAgeMs = 24 * 60 * 60 * 1000;
+  private readonly syncConcurrency = 4;
 
   constructor(
     @Inject(PlexService)
@@ -153,37 +157,41 @@ export class SyncService {
     job.totalMovies = ratingKeys.length;
     this.logger.log(`Full sync discovered ${ratingKeys.length} media items.`);
 
-    for (const ratingKey of ratingKeys) {
-      try {
-        if (
-          await this.ratings.hasFreshCacheForAllUsers(
-            ratingKey,
-            linkedUsers,
-            this.recentScanMaxAgeMs,
-          )
-        ) {
-          job.cachedSkips += 1;
-          if (debug) {
-            this.logger.debug(
-              `Full sync skipped ${ratingKey}: all enabled users scanned recently.`,
-            );
+    await runWithConcurrency(
+      ratingKeys,
+      this.syncConcurrency,
+      async (ratingKey) => {
+        try {
+          if (
+            await this.ratings.hasFreshCacheForAllUsers(
+              ratingKey,
+              linkedUsers,
+              this.recentScanMaxAgeMs,
+            )
+          ) {
+            job.cachedSkips += 1;
+            if (debug) {
+              this.logger.debug(
+                `Full sync skipped ${ratingKey}: all enabled users scanned recently.`,
+              );
+            }
+            return;
           }
-          continue;
-        }
 
-        await this.ratings.aggregate(ratingKey);
-        job.syncedMovies += 1;
-      } catch (error) {
-        job.skippedMovies += 1;
-        this.logger.warn(
-          `Skipped Plex ratingKey ${ratingKey} during sync: ${
-            error instanceof Error ? error.message : String(error)
-          }`,
-        );
-      } finally {
-        job.processedMovies += 1;
-      }
-    }
+          await this.ratings.aggregate(ratingKey);
+          job.syncedMovies += 1;
+        } catch (error) {
+          job.skippedMovies += 1;
+          this.logger.warn(
+            `Skipped Plex ratingKey ${ratingKey} during sync: ${
+              error instanceof Error ? error.message : String(error)
+            }`,
+          );
+        } finally {
+          job.processedMovies += 1;
+        }
+      },
+    );
 
     for (const user of linkedUsers) {
       await this.users.markSynced(user);
@@ -229,38 +237,42 @@ export class SyncService {
       `User sync for ${user.plexUsername} discovered ${ratingKeys.length} media items.`,
     );
 
-    for (const ratingKey of ratingKeys) {
-      try {
-        if (
-          await this.ratings.hasFreshCacheForUser(
-            ratingKey,
-            user,
-            this.recentScanMaxAgeMs,
-          )
-        ) {
-          job.cachedSkips += 1;
+    await runWithConcurrency(
+      ratingKeys,
+      this.syncConcurrency,
+      async (ratingKey) => {
+        try {
+          if (
+            await this.ratings.hasFreshCacheForUser(
+              ratingKey,
+              user,
+              this.recentScanMaxAgeMs,
+            )
+          ) {
+            job.cachedSkips += 1;
+            if (debug) {
+              this.logger.debug(
+                `User sync skipped ${ratingKey} for ${user.plexUsername}: scanned recently.`,
+              );
+            }
+            return;
+          }
+
+          await this.ratings.fetchAndCacheUserRating(ratingKey, user);
+          job.syncedMovies += 1;
+        } catch {
+          await this.ratings.cacheUnavailableRating(ratingKey, user);
+          job.skippedMovies += 1;
           if (debug) {
             this.logger.debug(
-              `User sync skipped ${ratingKey} for ${user.plexUsername}: scanned recently.`,
+              `User sync failed to retrieve ${ratingKey} for ${user.plexUsername}.`,
             );
           }
-          continue;
+        } finally {
+          job.processedMovies += 1;
         }
-
-        await this.ratings.fetchAndCacheUserRating(ratingKey, user);
-        job.syncedMovies += 1;
-      } catch {
-        await this.ratings.cacheUnavailableRating(ratingKey, user);
-        job.skippedMovies += 1;
-        if (debug) {
-          this.logger.debug(
-            `User sync failed to retrieve ${ratingKey} for ${user.plexUsername}.`,
-          );
-        }
-      } finally {
-        job.processedMovies += 1;
-      }
-    }
+      },
+    );
 
     await this.users.markSynced(user);
     this.logger.log(
@@ -319,24 +331,28 @@ export class SyncService {
       `Metadata refresh started for ${cachedRatingKeys.length} cached media items.`,
     );
 
-    for (const ratingKey of cachedRatingKeys) {
-      try {
-        if (await this.ratings.refreshCachedMetadata(ratingKey, sourceUser)) {
-          job.syncedMovies += 1;
-        } else {
+    await runWithConcurrency(
+      cachedRatingKeys,
+      this.syncConcurrency,
+      async (ratingKey) => {
+        try {
+          if (await this.ratings.refreshCachedMetadata(ratingKey, sourceUser)) {
+            job.syncedMovies += 1;
+          } else {
+            job.skippedMovies += 1;
+          }
+        } catch (error) {
           job.skippedMovies += 1;
+          this.logger.warn(
+            `Metadata refresh skipped Plex ratingKey ${ratingKey}: ${
+              error instanceof Error ? error.message : String(error)
+            }`,
+          );
+        } finally {
+          job.processedMovies += 1;
         }
-      } catch (error) {
-        job.skippedMovies += 1;
-        this.logger.warn(
-          `Metadata refresh skipped Plex ratingKey ${ratingKey}: ${
-            error instanceof Error ? error.message : String(error)
-          }`,
-        );
-      } finally {
-        job.processedMovies += 1;
-      }
-    }
+      },
+    );
 
     this.logger.log(
       `Metadata refresh completed: refreshed=${job.syncedMovies}, skipped=${job.skippedMovies}.`,
@@ -424,7 +440,7 @@ export class SyncService {
     const normalizedKeys = [...new Set(keys.map(String).filter(Boolean))];
     await this.settings.setJson(
       PLEX_SELECTED_MOVIE_LIBRARY_KEYS_SETTING,
-      normalizedKeys,
+      normalizedKeys.length > 0 ? normalizedKeys : [NO_LIBRARIES_SELECTED],
     );
     return normalizedKeys;
   }
@@ -433,7 +449,7 @@ export class SyncService {
     const normalizedKeys = [...new Set(keys.map(String).filter(Boolean))];
     await this.settings.setJson(
       PLEX_SELECTED_TV_LIBRARY_KEYS_SETTING,
-      normalizedKeys,
+      normalizedKeys.length > 0 ? normalizedKeys : [NO_LIBRARIES_SELECTED],
     );
     return normalizedKeys;
   }
@@ -478,14 +494,17 @@ export class SyncService {
 
     const selectedKeys = await this.getSelectedMovieLibraryKeys();
     const selectedKeySet = new Set(selectedKeys);
+    const explicitlyNone = selectedKeySet.has(NO_LIBRARIES_SELECTED);
     const libraries = await this.plex.listMovieLibraries(sourceUser.plexToken);
 
     return {
       libraries: libraries.map((library) => ({
         ...library,
-        selected: selectedKeySet.size === 0 || selectedKeySet.has(library.key),
+        selected:
+          !explicitlyNone &&
+          (selectedKeySet.size === 0 || selectedKeySet.has(library.key)),
       })),
-      selectedKeys,
+      selectedKeys: explicitlyNone ? [] : selectedKeys,
     };
   }
 
@@ -508,6 +527,7 @@ export class SyncService {
 
     const selectedKeys = await this.getSelectedTvLibraryKeys();
     const selectedKeySet = new Set(selectedKeys);
+    const explicitlyNone = selectedKeySet.has(NO_LIBRARIES_SELECTED);
     const libraries = (
       await this.plex.listLibraries(sourceUser.plexToken)
     ).filter((library) => library.type === "show");
@@ -515,9 +535,11 @@ export class SyncService {
     return {
       libraries: libraries.map((library) => ({
         ...library,
-        selected: selectedKeySet.size === 0 || selectedKeySet.has(library.key),
+        selected:
+          !explicitlyNone &&
+          (selectedKeySet.size === 0 || selectedKeySet.has(library.key)),
       })),
-      selectedKeys,
+      selectedKeys: explicitlyNone ? [] : selectedKeys,
     };
   }
 

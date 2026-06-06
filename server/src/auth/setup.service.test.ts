@@ -1,105 +1,125 @@
-import {
-  ForbiddenException,
-  ServiceUnavailableException,
-} from "@nestjs/common";
+import { ServiceUnavailableException } from "@nestjs/common";
 import { describe, expect, it, vi } from "vitest";
 import { SetupService } from "./setup.service";
 
 function makeService({
   admin = null,
-  adminPlexUserId,
+  serverConfigured = false,
   completed = false,
-  setupToken,
 }: {
   admin?: object | null;
-  adminPlexUserId?: string;
+  serverConfigured?: boolean;
   completed?: boolean;
-  setupToken?: string;
 } = {}) {
-  const config = {
-    get: vi.fn((key: string) => {
-      if (key === "setupToken") {
-        return setupToken;
+  const users = {
+    findAdmin: vi.fn().mockResolvedValue(admin),
+    findLinkedAdminWithAccountToken: vi.fn().mockResolvedValue(admin),
+  };
+  const settings = {
+    get: vi.fn(async (key: string) => {
+      if (key === "setup.completed") {
+        return completed ? "true" : undefined;
       }
-      if (key === "plex.adminPlexUserId") {
-        return adminPlexUserId;
+      if (key === "plex.baseUrl") {
+        return serverConfigured ? "http://plex:32400" : undefined;
       }
       return undefined;
     }),
-  };
-  const users = { findAdmin: vi.fn().mockResolvedValue(admin) };
-  const settings = {
-    get: vi.fn().mockResolvedValue(completed ? "true" : undefined),
     set: vi.fn(),
   };
+  const plex = {
+    listServerConnections: vi.fn().mockResolvedValue({ candidates: [] }),
+    testServerBaseUrl: vi.fn().mockResolvedValue({ ok: true }),
+  };
   return {
-    service: new SetupService(
-      config as never,
-      users as never,
-      settings as never,
-    ),
+    service: new SetupService(users as never, settings as never, plex as never),
+    users,
     settings,
+    plex,
   };
 }
 
 describe("SetupService", () => {
-  it("reports setup status and accepts the configured token", async () => {
-    const token = "a".repeat(32);
-    const { service } = makeService({ setupToken: token });
-
-    await expect(service.status()).resolves.toEqual({ setupRequired: true });
-    await expect(service.authorizeInitialSetup(1, token)).resolves.toBe(true);
+  it("requires setup when no admin exists", async () => {
+    const { service } = makeService();
+    await expect(service.status()).resolves.toEqual({
+      setupRequired: true,
+      needsFirstAdmin: true,
+      serverConfigured: false,
+    });
+    await expect(service.needsFirstAdmin()).resolves.toBe(true);
   });
 
-  it("does not require setup after an admin exists or is preconfigured", async () => {
-    const existingAdmin = makeService({ admin: { id: "admin" } });
-    await expect(existingAdmin.service.authorizeInitialSetup(1)).resolves.toBe(
-      false,
-    );
-    expect(existingAdmin.settings.set).toHaveBeenCalledWith(
-      "setup.completed",
-      "true",
-    );
-
-    await expect(
-      makeService({
-        adminPlexUserId: "123",
-      }).service.authorizeInitialSetup(1),
-    ).resolves.toBe(false);
+  it("still requires setup when an admin exists but no server is configured", async () => {
+    const { service } = makeService({ admin: { id: "admin" } });
+    await expect(service.status()).resolves.toEqual({
+      setupRequired: true,
+      needsFirstAdmin: false,
+      serverConfigured: false,
+    });
   });
 
-  it("rejects missing configuration and invalid tokens", async () => {
-    await expect(
-      makeService().service.authorizeInitialSetup(1),
-    ).rejects.toBeInstanceOf(ServiceUnavailableException);
-    await expect(
-      makeService({
-        setupToken: "e".repeat(32),
-      }).service.authorizeInitialSetup(1, "wrong"),
-    ).rejects.toBeInstanceOf(ForbiddenException);
-  });
-
-  it("allows one setup PIN at a time and supports releasing a failed claim", async () => {
-    const token = "e".repeat(32);
-    const { service } = makeService({ setupToken: token });
-    await service.authorizeInitialSetup(1, token);
-
-    await expect(service.authorizeInitialSetup(2, token)).rejects.toThrow(
-      "Initial setup is already in progress.",
-    );
-
-    service.releaseInitialSetup(1);
-    await expect(service.authorizeInitialSetup(2, token)).resolves.toBe(true);
-  });
-
-  it("permanently closes setup after completion", async () => {
-    const token = "a".repeat(32);
-    const { service, settings } = makeService({ setupToken: token });
-    await service.authorizeInitialSetup(1, token);
-    await service.completeInitialSetup(1);
+  it("completes setup once an admin and server URL are present", async () => {
+    const { service, settings } = makeService({
+      admin: { id: "admin" },
+      serverConfigured: true,
+    });
+    await expect(service.status()).resolves.toEqual({
+      setupRequired: false,
+      needsFirstAdmin: false,
+      serverConfigured: true,
+    });
     expect(settings.set).toHaveBeenCalledWith("setup.completed", "true");
+  });
 
-    settings.get.mockResolvedValue("true");
-    await expect(service.authorizeInitialSetup(2)).resolves.toBe(false);
+  it("stays complete once flagged", async () => {
+    const { service } = makeService({ completed: true });
+    await expect(service.status()).resolves.toMatchObject({
+      setupRequired: false,
+    });
+  });
+
+  it("saves the base URL and marks setup complete", async () => {
+    const { service, settings } = makeService({ admin: { id: "admin" } });
+    settings.get.mockImplementation(async (key: string) => {
+      if (key === "plex.baseUrl") {
+        return "http://plex:32400";
+      }
+      return undefined;
+    });
+
+    const status = await service.saveServerBaseUrl("http://plex:32400/");
+    expect(settings.set).toHaveBeenCalledWith(
+      "plex.baseUrl",
+      "http://plex:32400",
+    );
+    expect(settings.set).toHaveBeenCalledWith("setup.completed", "true");
+    expect(status).toMatchObject({ setupRequired: false });
+  });
+
+  it("refuses to query Plex candidates without a linked admin", async () => {
+    const { service } = makeService();
+    await expect(service.listServerCandidates()).rejects.toBeInstanceOf(
+      ServiceUnavailableException,
+    );
+  });
+
+  it("lists server candidates using the admin account token", async () => {
+    const { service, plex } = makeService({
+      admin: { plexAccountToken: "account-token", plexToken: "server-token" },
+    });
+    await service.listServerCandidates();
+    expect(plex.listServerConnections).toHaveBeenCalledWith("account-token");
+  });
+
+  it("tests a connection using the admin server token", async () => {
+    const { service, plex } = makeService({
+      admin: { plexAccountToken: "account-token", plexToken: "server-token" },
+    });
+    await service.testServerConnection("http://plex:32400");
+    expect(plex.testServerBaseUrl).toHaveBeenCalledWith(
+      "http://plex:32400",
+      "server-token",
+    );
   });
 });

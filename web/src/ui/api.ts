@@ -146,6 +146,24 @@ export type JobsSettings = {
   metadataSync: CronJobSettings;
 };
 
+export type SetupStatus = {
+  setupRequired: boolean;
+  needsFirstAdmin: boolean;
+  serverConfigured: boolean;
+};
+
+export type ServerConnectionCandidate = {
+  uri: string;
+  local: boolean;
+};
+
+export type ServerCandidates = {
+  serverName?: string;
+  clientIdentifier?: string;
+  currentBaseUrl?: string;
+  candidates: ServerConnectionCandidate[];
+};
+
 async function apiFetch<T>(path: string, init: RequestInit = {}): Promise<T> {
   const response = await fetch(`/api${path}`, {
     ...init,
@@ -186,15 +204,21 @@ export const api = {
       "/auth/plex/pin",
       { method: "POST" },
     ),
-  getSetupStatus: () =>
-    apiFetch<{ setupRequired: boolean }>("/auth/plex/setup"),
-  pollPin: (pinId: number, setupToken?: string) =>
-    apiFetch<{ linked: boolean; user?: LinkedUser }>(
-      `/auth/plex/pin/${pinId}`,
-      {
-        headers: setupToken ? { "X-Setup-Token": setupToken } : undefined,
-      },
+  getSetupStatus: () => apiFetch<SetupStatus>("/auth/plex/setup"),
+  pollPin: (pinId: number) =>
+    apiFetch<{ linked: boolean; user?: LinkedUser }>(`/auth/plex/pin/${pinId}`),
+  getServerCandidates: () =>
+    apiFetch<ServerCandidates>("/auth/plex/server-candidates"),
+  testServerConnection: (uri: string) =>
+    apiFetch<{ ok: boolean; serverName?: string }>(
+      "/auth/plex/test-connection",
+      { method: "POST", body: JSON.stringify({ uri }) },
     ),
+  saveServerConfig: (baseUrl: string) =>
+    apiFetch<SetupStatus>("/auth/plex/server-config", {
+      method: "POST",
+      body: JSON.stringify({ baseUrl }),
+    }),
   me: () => apiFetch<LinkedUser>("/auth/me"),
   logout: () =>
     apiFetch<{ loggedOut: boolean }>("/auth/logout", { method: "POST" }),

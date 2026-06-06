@@ -1,5 +1,4 @@
 import { BadRequestException, Inject, Injectable } from "@nestjs/common";
-import { ConfigService } from "@nestjs/config";
 import {
   SettingsService,
   SONARR_SETTINGS_SETTING,
@@ -28,7 +27,6 @@ export type SonarrConnectionSettings = {
 @Injectable()
 export class SonarrService {
   constructor(
-    @Inject(ConfigService) private readonly config: ConfigService,
     @Inject(SettingsService) private readonly settings: SettingsService,
   ) {}
 
@@ -38,21 +36,11 @@ export class SonarrService {
     >(SONARR_SETTINGS_SETTING, {});
 
     return {
-      enabled:
-        saved.enabled ?? this.config.get<boolean>("sonarr.enabled") ?? false,
-      url: (saved.url ?? this.config.get<string>("sonarr.url") ?? "").replace(
-        /\/+$/,
-        "",
-      ),
-      apiKey: saved.apiKey ?? this.config.get<string>("sonarr.apiKey") ?? "",
-      tagName:
-        saved.tagName ??
-        this.config.get<string>("sonarr.tagName") ??
-        "family-favorite",
-      removeTagsWhenUnprotected:
-        saved.removeTagsWhenUnprotected ??
-        this.config.get<boolean>("sonarr.removeTagsWhenUnprotected") ??
-        false,
+      enabled: saved.enabled ?? false,
+      url: (saved.url ?? "").replace(/\/+$/, ""),
+      apiKey: saved.apiKey ?? "",
+      tagName: saved.tagName ?? "family-favorite",
+      removeTagsWhenUnprotected: saved.removeTagsWhenUnprotected ?? false,
     };
   }
 

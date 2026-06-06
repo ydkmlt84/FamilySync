@@ -13,6 +13,10 @@ import type { Response } from "express";
 import { AuthGuard } from "../auth/auth.guard";
 import { AdminGuard } from "../auth/admin.guard";
 import { PlexService } from "../plex/plex.service";
+import {
+  PLEX_BASE_URL_SETTING,
+  SettingsService,
+} from "../settings/settings.service";
 import { UsersService } from "../users/users.service";
 import { RatingsService } from "./ratings.service";
 
@@ -22,6 +26,7 @@ export class RatingsController {
     @Inject(RatingsService) private readonly ratings: RatingsService,
     @Inject(UsersService) private readonly users: UsersService,
     @Inject(PlexService) private readonly plex: PlexService,
+    @Inject(SettingsService) private readonly settings: SettingsService,
   ) {}
 
   @Get("favorites")
@@ -126,7 +131,10 @@ export class RatingsController {
         ? await this.users.findLinkedAdminWithAccountToken()
         : undefined;
     const token = plexToken ?? admin?.plexToken;
-    const baseUrl = process.env.PLEX_BASE_URL?.replace(/\/+$/, "");
+    const baseUrl = (await this.settings.get(PLEX_BASE_URL_SETTING))?.replace(
+      /\/+$/,
+      "",
+    );
 
     if (!baseUrl || !token) {
       throw new NotFoundException("Plex base URL is not configured.");

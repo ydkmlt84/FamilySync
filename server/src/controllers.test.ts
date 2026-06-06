@@ -15,7 +15,12 @@ describe("SessionController", () => {
     };
     const users = { remove: vi.fn() };
     const response = { clearCookie: vi.fn() };
-    const controller = new SessionController(sessions as never, users as never);
+    const sessionCookie = { clear: vi.fn() };
+    const controller = new SessionController(
+      sessions as never,
+      users as never,
+      sessionCookie as never,
+    );
     const request = {
       cookies: { familysync_session: "token" },
       user: {
@@ -42,6 +47,7 @@ describe("SessionController", () => {
       controller.unlinkSelf({} as never, response as never),
     ).resolves.toEqual({ removed: false });
     expect(users.remove).toHaveBeenCalledWith("1");
+    expect(sessionCookie.clear).toHaveBeenCalledTimes(2);
   });
 });
 
@@ -135,6 +141,7 @@ describe("RatingsController", () => {
     };
     const controller = new RatingsController(
       ratings as never,
+      {} as never,
       {} as never,
       {} as never,
     );

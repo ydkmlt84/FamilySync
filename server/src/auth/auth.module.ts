@@ -10,6 +10,7 @@ import { SessionsService } from "./sessions.service";
 import { AuthGuard } from "./auth.guard";
 import { AdminGuard } from "./admin.guard";
 import { SetupService } from "./setup.service";
+import { SessionCookieService } from "./session-cookie.service";
 
 @Global()
 @Module({
@@ -20,7 +21,13 @@ import { SetupService } from "./setup.service";
     SettingsModule,
   ],
   controllers: [AuthController, SessionController],
-  providers: [SessionsService, AuthGuard, AdminGuard, SetupService],
-  exports: [SessionsService, AuthGuard, AdminGuard],
+  providers: [
+    SessionsService,
+    SessionCookieService,
+    AuthGuard,
+    AdminGuard,
+    SetupService,
+  ],
+  exports: [SessionsService, SessionCookieService, AuthGuard, AdminGuard],
 })
 export class AuthModule {}

@@ -4,19 +4,16 @@ import { SonarrService } from "./sonarr.service";
 describe("SonarrService", () => {
   it("preserves a stored API key when an empty key is submitted", async () => {
     const setJson = vi.fn();
-    const service = new SonarrService(
-      { get: vi.fn() } as never,
-      {
-        getJson: vi.fn().mockResolvedValue({
-          enabled: true,
-          url: "http://sonarr:8989",
-          apiKey: "stored-secret",
-          tagName: "family-favorite",
-          removeTagsWhenUnprotected: false,
-        }),
-        setJson,
-      } as never,
-    );
+    const service = new SonarrService({
+      getJson: vi.fn().mockResolvedValue({
+        enabled: true,
+        url: "http://sonarr:8989",
+        apiKey: "stored-secret",
+        tagName: "family-favorite",
+        removeTagsWhenUnprotected: false,
+      }),
+      setJson,
+    } as never);
 
     const result = await service.updateSettings({
       enabled: true,

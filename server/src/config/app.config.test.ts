@@ -9,30 +9,32 @@ describe("appConfig", () => {
     process.env = { ...original };
   });
 
-  it("uses defaults and normalizes service URLs", () => {
-    process.env.DATABASE_PATH = "";
+  it("derives data paths from CONFIG_DIR and reads the encryption keys", () => {
     process.env.CONFIG_DIR = "custom-data";
-    process.env.LOG_PATH = "";
-    process.env.PLEX_BASE_URL = "http://plex///";
-    process.env.RADARR_URL = "http://radarr/";
-    process.env.RADARR_ENABLED = "true";
-    process.env.SONARR_REMOVE_TAGS_WHEN_UNPROTECTED = "true";
-    process.env.PROTECTION_THRESHOLD = "8";
-    process.env.SETUP_TOKEN = "setup-secret";
+    process.env.APP_ENCRYPTION_KEY = "primary-key";
+    process.env.APP_ENCRYPTION_KEY_PREVIOUS = "previous-key";
+    process.env.PUBLIC_URL = "https://family.example.com";
+    process.env.COOKIE_SECURE = "true";
+    process.env.TRUST_PROXY = "true";
 
     const config = appConfig();
 
-    expect(config.plex.baseUrl).toBe("http://plex");
-    expect(config.radarr).toMatchObject({
-      enabled: true,
-      url: "http://radarr",
-      protectionThreshold: 8,
-    });
-    expect(config.sonarr.removeTagsWhenUnprotected).toBe(true);
-    expect(config.ratings.protectionThreshold).toBe(8);
-    expect(config.setupToken).toBe("setup-secret");
     expect(config.configDir).toBe("custom-data");
     expect(config.databasePath).toBe(join("custom-data", "familysync.sqlite"));
     expect(config.logPath).toBe(join("custom-data", "logs", "familysync.log"));
+    expect(config.encryptionKey).toBe("primary-key");
+    expect(config.previousEncryptionKey).toBe("previous-key");
+    expect(config.publicUrl).toBe("https://family.example.com");
+    expect(config.cookieSecure).toBe("true");
+    expect(config.trustProxy).toBe("true");
+  });
+
+  it("defaults the data directory to ./data", () => {
+    delete process.env.CONFIG_DIR;
+
+    const config = appConfig();
+
+    expect(config.configDir).toBe("data");
+    expect(config.databasePath).toBe(join("data", "familysync.sqlite"));
   });
 });

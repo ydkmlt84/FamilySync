@@ -1,16 +1,22 @@
 services:
   familysync:
-    build: .
+    image: ghcr.io/ydkmlt84/familysync:main
     container_name: familysync
+    hostname: familysync
     ports:
-      - "3000:3000"
-    env_file:
-      - .env
+      - '6614:6614'
     environment:
-      CONFIG_DIR: /config
+      APP_ENCRYPTION_KEY: '<paste-generated-key-here>'
     volumes:
-      - familysync-config:/config
+      - /host/volume/location/familysync:/config
     restart: unless-stopped
-
-volumes:
-  familysync-config:
+    healthcheck:
+      test:
+        - 'CMD'
+        - 'node'
+        - '-e'
+        - "fetch('http://127.0.0.1:6614/').then(r => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))"
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s

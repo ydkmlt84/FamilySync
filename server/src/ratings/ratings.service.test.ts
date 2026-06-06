@@ -29,15 +29,22 @@ function makeRatingsService() {
     getJson: vi.fn().mockImplementation((_key, fallback) => fallback),
     setJson: vi.fn(),
   };
+  const radarr = {
+    syncProtectedTag: vi.fn(),
+    syncLowRated: vi.fn(),
+  };
+  const sonarr = {
+    syncProtectedTag: vi.fn(),
+    syncLowRated: vi.fn(),
+  };
   const service = new RatingsService(
     userRatings as never,
     mediaOverrides as never,
     users as never,
     plex as never,
-    config as never,
     settings as never,
-    {} as never,
-    {} as never,
+    radarr as never,
+    sonarr as never,
   );
   return {
     service,
@@ -47,6 +54,8 @@ function makeRatingsService() {
     config,
     settings,
     plex,
+    radarr,
+    sonarr,
   };
 }
 
@@ -144,6 +153,29 @@ describe("RatingsService aggregation and display", () => {
     });
     expect(unavailable).toHaveBeenCalledOnce();
     expect(integrations).toHaveBeenCalledWith("movie", 10, undefined, true);
+  });
+
+  it("does not sync Sonarr tags from an episode aggregation", async () => {
+    const { service, sonarr, users } = makeRatingsService();
+    users.listEnabled.mockResolvedValue([
+      { plexUserId: "1", plexUsername: "Alex" },
+    ]);
+    Reflect.set(
+      service,
+      "fetchAndCacheUserRating",
+      vi.fn().mockResolvedValue({
+        rating: 10,
+        mediaType: "episode",
+        tvdbId: 100,
+      }),
+    );
+
+    await expect(service.aggregate("episode", true)).resolves.toMatchObject({
+      protected: true,
+      mediaType: "episode",
+    });
+    expect(sonarr.syncProtectedTag).not.toHaveBeenCalled();
+    expect(sonarr.syncLowRated).not.toHaveBeenCalled();
   });
 
   it("lists sorted, available favorites with protection and low-rated status", async () => {
@@ -376,6 +408,66 @@ describe("RatingsService settings, stats, and overrides", () => {
     });
   });
 
+  it("ignores season and episode ratings during tag sync", async () => {
+    const { service, users, userRatings, radarr, sonarr } =
+      makeRatingsService();
+    users.listEnabled.mockResolvedValue([{ plexUserId: "1" }]);
+    userRatings.find.mockResolvedValue([
+      {
+        ratingKey: "movie",
+        plexUserId: "1",
+        rating: 10,
+        mediaType: "movie",
+        tmdbId: 10,
+        syncStatus: "rated",
+      },
+      {
+        ratingKey: "show",
+        plexUserId: "1",
+        rating: 10,
+        mediaType: "show",
+        tvdbId: 20,
+        syncStatus: "rated",
+      },
+      {
+        ratingKey: "season",
+        plexUserId: "1",
+        rating: 10,
+        mediaType: "season",
+        tvdbId: 20,
+        syncStatus: "rated",
+      },
+      {
+        ratingKey: "episode",
+        plexUserId: "1",
+        rating: 10,
+        mediaType: "episode",
+        tvdbId: 20,
+        syncStatus: "rated",
+      },
+    ]);
+
+    await expect(service.syncTagsFromCache()).resolves.toEqual({
+      processedMedia: 2,
+      taggedMedia: 2,
+      skippedMedia: 0,
+    });
+    expect(radarr.syncProtectedTag).toHaveBeenCalledOnce();
+    expect(radarr.syncProtectedTag).toHaveBeenCalledWith(
+      10,
+      true,
+      "family-favorite",
+      false,
+    );
+    expect(sonarr.syncProtectedTag).toHaveBeenCalledOnce();
+    expect(sonarr.syncProtectedTag).toHaveBeenCalledWith(
+      20,
+      true,
+      "family-favorite",
+      false,
+    );
+  });
+
   it("refreshes shared metadata without changing user rating values", async () => {
     const { service, plex, userRatings } = makeRatingsService();
     plex.getMediaMetadata.mockResolvedValue({
@@ -409,10 +501,13 @@ describe("RatingsService settings, stats, and overrides", () => {
   });
 
   it("creates and updates media overrides and filters exclusions", async () => {
-    const { service, mediaOverrides } = makeRatingsService();
+    const { service, mediaOverrides, userRatings } = makeRatingsService();
     mediaOverrides.findOne
       .mockResolvedValueOnce(null)
       .mockResolvedValueOnce({ ratingKey: "1", taggingExcluded: false });
+    userRatings.findOne
+      .mockResolvedValueOnce({ ratingKey: "1", mediaType: "movie" })
+      .mockResolvedValueOnce({ ratingKey: "episode", mediaType: "episode" });
     await expect(service.getMediaOverride("1")).resolves.toEqual({
       ratingKey: "1",
       taggingExcluded: false,
@@ -421,17 +516,20 @@ describe("RatingsService settings, stats, and overrides", () => {
       ratingKey: "1",
       taggingExcluded: true,
     });
+    await expect(service.setTaggingExcluded("episode", true)).rejects.toThrow(
+      "Only movies and shows can be excluded from tag sync.",
+    );
 
     mediaOverrides.find
       .mockResolvedValueOnce([])
       .mockResolvedValueOnce([{ ratingKey: "1", taggingExcluded: true }]);
     await expect(service.listExcludedMedia()).resolves.toEqual([]);
     vi.spyOn(service, "listFavorites").mockResolvedValue([
-      { ratingKey: "1" },
-      { ratingKey: "2" },
+      { ratingKey: "1", mediaType: "movie" },
+      { ratingKey: "2", mediaType: "episode" },
     ] as never);
     await expect(service.listExcludedMedia()).resolves.toEqual([
-      { ratingKey: "1" },
+      { ratingKey: "1", mediaType: "movie" },
     ]);
   });
 });

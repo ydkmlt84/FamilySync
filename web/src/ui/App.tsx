@@ -4,7 +4,6 @@ import "react-toastify/dist/ReactToastify.css";
 import {
   ArrowRight,
   Link2,
-  LogIn,
   LogOut,
   RefreshCw,
   Search,
@@ -33,6 +32,7 @@ import {
   SyncJobStatus,
   SyncStats,
 } from "./api";
+import { SetupWizard } from "./SetupWizard";
 
 function showToast(message: string) {
   toast(message);
@@ -82,7 +82,6 @@ export function App() {
   const [showExcludedModal, setShowExcludedModal] = useState(false);
   const [page, setPage] = useState<"home" | "settings">("home");
   const [settingsTab, setSettingsTab] = useState<SettingsTab>("overview");
-  const [message, setMessage] = useState("");
   const [busy, setBusy] = useState(false);
   const [syncing, setSyncing] = useState(false);
   const [syncingUserId, setSyncingUserId] = useState<string>();
@@ -97,7 +96,7 @@ export function App() {
   const [ratingLookupPending, setRatingLookupPending] = useState(false);
   const [loggingOut, setLoggingOut] = useState(false);
   const [setupRequired, setSetupRequired] = useState(false);
-  const [setupToken, setSetupToken] = useState("");
+  const [setupNeedsFirstAdmin, setSetupNeedsFirstAdmin] = useState(true);
   const plexPopup = useRef<Window | null>(null);
 
   const refreshUsers = useCallback(async () => {
@@ -199,7 +198,10 @@ export function App() {
     void refreshSession();
     void api
       .getSetupStatus()
-      .then((status) => setSetupRequired(status.setupRequired))
+      .then((status) => {
+        setSetupRequired(status.setupRequired);
+        setSetupNeedsFirstAdmin(status.needsFirstAdmin);
+      })
       .catch(() => setSetupRequired(false));
   }, [refreshSession]);
 
@@ -258,35 +260,54 @@ export function App() {
 
     const interval = window.setInterval(async () => {
       try {
-        const result = await api.pollPin(
-          pin.pinId,
-          setupRequired ? setupToken.trim() : undefined,
-        );
+        const result = await api.pollPin(pin.pinId);
 
         if (result.linked) {
           window.clearInterval(interval);
           plexPopup.current?.close();
           plexPopup.current = null;
           setPin(undefined);
-          setMessage(`Linked ${result.user?.plexUsername ?? "Plex user"}.`);
-          setSetupRequired(false);
-          setSetupToken("");
+          showToast(`Linked ${result.user?.plexUsername ?? "Plex user"}.`);
           await refreshSession();
+
+          try {
+            const status = await api.getSetupStatus();
+            setSetupRequired(status.setupRequired);
+            setSetupNeedsFirstAdmin(status.needsFirstAdmin);
+          } catch {
+            setSetupRequired(false);
+          }
         }
       } catch (error) {
         window.clearInterval(interval);
         plexPopup.current?.close();
         plexPopup.current = null;
         setPin(undefined);
-        setMessage(error instanceof Error ? error.message : String(error));
+        showToast(error instanceof Error ? error.message : String(error));
       }
     }, 1000);
 
     return () => window.clearInterval(interval);
-  }, [pin, refreshSession, setupRequired, setupToken]);
+  }, [pin, refreshSession]);
 
   if (window.location.pathname === "/auth/plex/loading") {
     return <PlexPopupLoading />;
+  }
+
+  if (setupRequired) {
+    return (
+      <SetupWizard
+        busy={ratingLookupPending}
+        currentUser={currentUser}
+        needsFirstAdmin={setupNeedsFirstAdmin}
+        onComplete={async () => {
+          setSetupRequired(false);
+          await refreshSession();
+        }}
+        onJoin={joinWithPlex}
+        pinCode={pin?.code}
+      />
+    );
   }
 
   async function refreshLinkedUsers() {
@@ -523,10 +544,9 @@ export function App() {
 
   async function toggleMovieLibrary(key: string) {
     const currentKeys =
-      movieLibraries?.selectedKeys.length &&
-      movieLibraries.selectedKeys.length > 0
-        ? movieLibraries.selectedKeys
-        : (movieLibraries?.libraries.map((library) => library.key) ?? []);
+      movieLibraries?.libraries
+        .filter((library) => library.selected)
+        .map((library) => library.key) ?? [];
     const selectedKeys = currentKeys.includes(key)
       ? currentKeys.filter((selectedKey) => selectedKey !== key)
       : [...currentKeys, key];
@@ -538,9 +558,9 @@ export function App() {
 
   async function toggleTvLibrary(key: string) {
     const currentKeys =
-      tvLibraries?.selectedKeys.length && tvLibraries.selectedKeys.length > 0
-        ? tvLibraries.selectedKeys
-        : (tvLibraries?.libraries.map((library) => library.key) ?? []);
+      tvLibraries?.libraries
+        .filter((library) => library.selected)
+        .map((library) => library.key) ?? [];
     const selectedKeys = currentKeys.includes(key)
       ? currentKeys.filter((selectedKey) => selectedKey !== key)
       : [...currentKeys, key];
@@ -551,13 +571,7 @@ export function App() {
   }
 
   async function joinWithPlex() {
-    if (setupRequired && !setupToken.trim()) {
-      setMessage("Enter the setup token before linking the first admin.");
-      return;
-    }
-
     setRatingLookupPending(true);
-    setMessage("");
     plexPopup.current = openCenteredPopup(
       "/auth/plex/loading",
       "Plex Auth",
@@ -578,7 +592,7 @@ export function App() {
     } catch (error) {
       plexPopup.current?.close();
       plexPopup.current = null;
-      setMessage(error instanceof Error ? error.message : String(error));
+      showToast(error instanceof Error ? error.message : String(error));
     } finally {
       setRatingLookupPending(false);
     }
@@ -632,12 +646,10 @@ export function App() {
     }
 
     setBusy(true);
-    setMessage("");
-
     try {
       setRating(await api.getRating(ratingKey.trim()));
     } catch (error) {
-      setMessage(error instanceof Error ? error.message : String(error));
+      showToast(error instanceof Error ? error.message : String(error));
     } finally {
       setBusy(false);
     }
@@ -761,7 +773,7 @@ export function App() {
       setRadarrSettings(undefined);
       setSonarrSettings(undefined);
       await refreshFavorites();
-      setMessage("Signed out.");
+      showToast("Signed out.");
     } catch (error) {
       showToast(error instanceof Error ? error.message : String(error));
     } finally {
@@ -786,22 +798,22 @@ export function App() {
               </p>
             </div>
           </div>
-          <UserArea
-            busy={busy}
-            currentUser={currentUser}
-            loggingOut={loggingOut}
-            onJoin={joinWithPlex}
-            onLogout={logout}
-            onSettings={
-              currentUser?.isAdmin
-                ? () =>
-                    setPage((current) =>
-                      current === "settings" ? "home" : "settings",
-                    )
-                : undefined
-            }
-            settingsActive={page === "settings"}
-          />
+          {currentUser && (
+            <UserArea
+              currentUser={currentUser}
+              loggingOut={loggingOut}
+              onLogout={logout}
+              onSettings={
+                currentUser.isAdmin
+                  ? () =>
+                      setPage((current) =>
+                        current === "settings" ? "home" : "settings",
+                      )
+                  : undefined
+              }
+              settingsActive={page === "settings"}
+            />
+          )}
         </div>
       </header>
 
@@ -811,9 +823,6 @@ export function App() {
         favoriteIndex={favoriteIndex}
         favorites={carouselMovies}
         onJoin={joinWithPlex}
-        onSetupTokenChange={setSetupToken}
-        setupRequired={setupRequired}
-        setupToken={setupToken}
       />
 
       {currentUser && page === "home" && (
@@ -1403,10 +1412,6 @@ export function App() {
                       value={syncStats?.unratedMedia ?? "-"}
                     />
                     <Metric
-                      label="Protected"
-                      value={syncStats?.protectedMedia ?? "-"}
-                    />
-                    <Metric
                       label="Excluded"
                       value={syncStats?.excludedMedia ?? "-"}
                     />
@@ -1515,12 +1520,6 @@ export function App() {
                   )}
                 </div>
               )}
-
-              {message && (
-                <p className="rounded-md border border-[#263245] bg-[#111827] p-3 text-sm">
-                  {message}
-                </p>
-              )}
             </aside>
           </div>
         </div>
@@ -1574,6 +1573,12 @@ type SettingsTab =
   | "jobs";
 
 type MediaFilter = "all" | "movie" | "show" | "season" | "episode";
+
+export function supportsTagExclusion(
+  mediaType: FavoriteMovieRating["mediaType"],
+): boolean {
+  return mediaType === "movie" || mediaType === "show";
+}
 
 export function filterMediaByType(
   movies: FavoriteMovieRating[],
@@ -1730,40 +1735,18 @@ function ManagedHomeUsersPanel({
 }
 
 function UserArea({
-  busy,
   currentUser,
   loggingOut,
-  onJoin,
   onLogout,
   onSettings,
   settingsActive,
 }: {
-  busy: boolean;
-  currentUser?: LinkedUser;
+  currentUser: LinkedUser;
   loggingOut: boolean;
-  onJoin: () => void;
   onLogout: () => void;
   onSettings?: () => void;
   settingsActive: boolean;
 }) {
-  if (!currentUser) {
-    return (
-      <button
-        className="inline-flex min-h-10 items-center gap-2 rounded-md border border-[#334155] bg-[#111827] px-3 py-2 text-sm font-medium hover:bg-[#1f2937] disabled:opacity-50"
-        disabled={busy}
-        onClick={onJoin}
-        title="Sign in with Plex"
-      >
-        {busy ? (
-          <RefreshCw className="animate-spin" size={17} />
-        ) : (
-          <LogIn size={17} />
-        )}
-        {busy ? "Connecting" : "Sign In"}
-      </button>
-    );
-  }
-
   return (
     <div className="flex min-w-0 items-center gap-3">
       <div className="hidden min-w-0 items-center gap-2 sm:flex">
@@ -1854,18 +1837,12 @@ function LandingHero({
   favoriteIndex,
   favorites,
   onJoin,
-  onSetupTokenChange,
-  setupRequired,
-  setupToken,
 }: {
   busy: boolean;
   currentUser?: LinkedUser;
   favoriteIndex: number;
   favorites: PublicCarouselRating[];
   onJoin: () => void;
-  onSetupTokenChange: (value: string) => void;
-  setupRequired: boolean;
-  setupToken: string;
 }) {
   return (
     <section className="border-b border-[#263245] bg-[#0f172a]">
@@ -1875,37 +1852,19 @@ function LandingHero({
             Family ratings, collected from the people who made them.
           </h2>
           {!currentUser && (
-            <>
-              {setupRequired && (
-                <label className="mt-6 block max-w-md text-sm">
-                  <span className="text-[#fef3c7]">Initial setup token</span>
-                  <input
-                    autoComplete="off"
-                    className="mt-1 w-full rounded-md border border-[#b45309] bg-[#0f172a] px-3 py-2 text-[#e5e7eb] placeholder:text-[#64748b]"
-                    onChange={(event) => onSetupTokenChange(event.target.value)}
-                    placeholder="Enter SETUP_TOKEN"
-                    type="password"
-                    value={setupToken}
-                  />
-                  <span className="mt-1 block text-xs text-[#94a3b8]">
-                    Required only while claiming a new FamilySync instance.
-                  </span>
-                </label>
+            <button
+              className="mt-6 inline-flex min-h-11 items-center gap-2 rounded-md bg-[#0ea5e9] px-5 py-2.5 text-sm font-semibold text-white hover:bg-[#0284c7] disabled:opacity-50"
+              disabled={busy}
+              onClick={onJoin}
+            >
+              {busy ? (
+                <RefreshCw className="animate-spin" size={18} />
+              ) : (
+                <Link2 size={18} />
               )}
-              <button
-                className="mt-6 inline-flex min-h-11 items-center gap-2 rounded-md bg-[#0ea5e9] px-5 py-2.5 text-sm font-semibold text-white hover:bg-[#0284c7] disabled:opacity-50"
-                disabled={busy}
-                onClick={onJoin}
-              >
-                {busy ? (
-                  <RefreshCw className="animate-spin" size={18} />
-                ) : (
-                  <Link2 size={18} />
-                )}
-                {busy ? "Connecting" : "Join with Plex"}
-                <ArrowRight size={17} />
-              </button>
-            </>
+              {busy ? "Connecting" : "Continue with Plex"}
+              <ArrowRight size={17} />
+            </button>
           )}
         </div>
 
@@ -1964,7 +1923,7 @@ function FamilyFavoritesCarousel({
     <div className="rounded-md border border-[#263245] bg-[#020617] p-4">
       <div className="rounded-md bg-[#111827] p-4 shadow-sm">
         <div className="grid grid-cols-[136px_1fr] gap-4">
-          <div className="aspect-[2/3] overflow-hidden rounded-md border border-[#263245] bg-[#0f172a]">
+          <div className="aspect-2/3 overflow-hidden rounded-md border border-[#263245] bg-[#0f172a]">
             {favorite.posterUrl ? (
               <img
                 alt=""
@@ -2408,7 +2367,7 @@ export function PosterGrid({
               key={movie.ratingKey}
               onClick={() => onMovieClick(movie)}
             >
-              <div className="relative aspect-[2/3] overflow-hidden rounded-md border border-[#263245] bg-[#111827]">
+              <div className="relative aspect-2/3 overflow-hidden rounded-md border border-[#263245] bg-[#111827]">
                 {movie.posterUrl ? (
                   <img
                     alt={`${movie.title ?? `Plex ${movie.ratingKey}`} poster`}
@@ -2420,13 +2379,14 @@ export function PosterGrid({
                     {movie.title ?? `Plex ${movie.ratingKey}`}
                   </div>
                 )}
-                <div className="absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/85 via-black/45 to-transparent px-2 pb-2 pt-8 opacity-0 transition-opacity group-hover:opacity-100 group-focus-visible:opacity-100">
+                <div className="absolute inset-x-0 bottom-0 bg-linear-to-t from-black/85 via-black/45 to-transparent px-2 pb-2 pt-8 opacity-0 transition-opacity group-hover:opacity-100 group-focus-visible:opacity-100">
                   <p className="text-sm font-semibold leading-snug text-white drop-shadow">
                     {movie.title ?? `Plex ${movie.ratingKey}`}
                   </p>
                 </div>
                 <div className="absolute left-2 top-2 flex flex-wrap gap-1">
-                  {movie.taggingExcluded && <Badge label="Excluded" />}
+                  {supportsTagExclusion(movie.mediaType) &&
+                    movie.taggingExcluded && <Badge label="Excluded" />}
                   {movie.lowRated && <Badge label="Low" muted />}
                 </div>
                 <div className="absolute right-2 top-2">
@@ -2642,7 +2602,8 @@ function RatingsModal({
             </h2>
             <div className="mt-2 flex flex-wrap gap-2">
               <MediaTypeBadge mediaType={movie.mediaType} />
-              {movie.taggingExcluded && <Badge label="Excluded from tags" />}
+              {supportsTagExclusion(movie.mediaType) &&
+                movie.taggingExcluded && <Badge label="Excluded from tags" />}
               {movie.lowRated && <Badge label="Low-rated" muted />}
             </div>
             <p className="text-sm text-[#94a3b8]">
@@ -2658,7 +2619,7 @@ function RatingsModal({
           </button>
         </div>
         <div className="overflow-auto p-4">
-          {currentUser?.isAdmin && (
+          {currentUser?.isAdmin && supportsTagExclusion(movie.mediaType) && (
             <label className="mb-4 flex items-center justify-between gap-3 rounded-md border border-[#263245] px-3 py-2 text-sm">
               <span>
                 <span className="block font-medium">Exclude from tag sync</span>

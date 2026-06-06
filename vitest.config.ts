@@ -5,7 +5,11 @@ export default defineConfig({
   plugins: [react()],
   test: {
     environment: "jsdom",
-    include: ["server/src/**/*.test.ts", "web/src/**/*.test.tsx"],
+    include: [
+      "server/src/**/*.test.ts",
+      "web/src/**/*.test.tsx",
+      "scripts/**/*.test.ts",
+    ],
     setupFiles: ["./test/setup.ts"],
     coverage: {
       provider: "v8",

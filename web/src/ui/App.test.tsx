@@ -9,6 +9,7 @@ import {
   LogoMark,
   MediaTypeBadge,
   PosterGrid,
+  supportsTagExclusion,
 } from "./App";
 import type { FavoriteMovieRating, IntegrationSettings } from "./api";
 
@@ -118,7 +119,7 @@ describe("TV media posters", () => {
     render(
       <PosterGrid
         mediaFilter="all"
-        movies={[media]}
+        movies={[{ ...media, taggingExcluded: true }]}
         onFilterChange={vi.fn()}
         onMovieClick={vi.fn()}
       />,
@@ -129,6 +130,14 @@ describe("TV media posters", () => {
       media.posterUrl,
     );
     expect(screen.getByText("episode")).toBeInTheDocument();
+    expect(screen.queryByText("Excluded")).not.toBeInTheDocument();
+  });
+
+  it("only allows movies and shows to be excluded from tag sync", () => {
+    expect(supportsTagExclusion("movie")).toBe(true);
+    expect(supportsTagExclusion("show")).toBe(true);
+    expect(supportsTagExclusion("season")).toBe(false);
+    expect(supportsTagExclusion("episode")).toBe(false);
   });
 });
 

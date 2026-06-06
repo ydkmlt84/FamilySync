@@ -1,5 +1,4 @@
 import { BadRequestException, Inject, Injectable } from "@nestjs/common";
-import { ConfigService } from "@nestjs/config";
 import {
   RADARR_SETTINGS_SETTING,
   SettingsService,
@@ -28,7 +27,6 @@ export type RadarrConnectionSettings = {
 @Injectable()
 export class RadarrService {
   constructor(
-    @Inject(ConfigService) private readonly config: ConfigService,
     @Inject(SettingsService) private readonly settings: SettingsService,
   ) {}
 
@@ -38,21 +36,11 @@ export class RadarrService {
     >(RADARR_SETTINGS_SETTING, {});
 
     return {
-      enabled:
-        saved.enabled ?? this.config.get<boolean>("radarr.enabled") ?? false,
-      url: (saved.url ?? this.config.get<string>("radarr.url") ?? "").replace(
-        /\/+$/,
-        "",
-      ),
-      apiKey: saved.apiKey ?? this.config.get<string>("radarr.apiKey") ?? "",
-      tagName:
-        saved.tagName ??
-        this.config.get<string>("radarr.tagName") ??
-        "family-favorite",
-      removeTagsWhenUnprotected:
-        saved.removeTagsWhenUnprotected ??
-        this.config.get<boolean>("radarr.removeTagsWhenUnprotected") ??
-        false,
+      enabled: saved.enabled ?? false,
+      url: (saved.url ?? "").replace(/\/+$/, ""),
+      apiKey: saved.apiKey ?? "",
+      tagName: saved.tagName ?? "family-favorite",
+      removeTagsWhenUnprotected: saved.removeTagsWhenUnprotected ?? false,
     };
   }
 

@@ -1,5 +1,9 @@
-import { Inject, Injectable, Logger } from "@nestjs/common";
-import { ConfigService } from "@nestjs/config";
+import {
+  BadRequestException,
+  Inject,
+  Injectable,
+  Logger,
+} from "@nestjs/common";
 import { InjectRepository } from "@nestjs/typeorm";
 import { In, Not, Repository } from "typeorm";
 import { PlexService } from "../plex/plex.service";
@@ -101,6 +105,12 @@ export type RatingCacheStats = {
   protectionThreshold: number;
 };
 
+function supportsTagSync(
+  mediaType: UserRating["mediaType"] | null | undefined,
+): boolean {
+  return mediaType === "movie" || mediaType === "show";
+}
+
 @Injectable()
 export class RatingsService {
   private readonly logger = new Logger(RatingsService.name);
@@ -114,8 +124,6 @@ export class RatingsService {
     private readonly users: UsersService,
     @Inject(PlexService)
     private readonly plex: PlexService,
-    @Inject(ConfigService)
-    private readonly config: ConfigService,
     @Inject(SettingsService)
     private readonly settings: SettingsService,
     @Inject(RadarrService)
@@ -227,6 +235,8 @@ export class RatingsService {
         );
         const values = numericRatings.map((rating) => rating.rating as number);
         const override = overrides.get(ratingKey);
+        const mediaType =
+          ratings.find((rating) => rating.mediaType)?.mediaType ?? "movie";
         const highest = values.length > 0 ? Math.max(...values) : null;
         const average =
           values.length > 0
@@ -239,8 +249,7 @@ export class RatingsService {
 
         return {
           ratingKey,
-          mediaType:
-            ratings.find((rating) => rating.mediaType)?.mediaType ?? "movie",
+          mediaType,
           title:
             ratings.find((rating) => rating.displayTitle)?.displayTitle ??
             ratings.find((rating) => rating.title)?.title ??
@@ -250,7 +259,8 @@ export class RatingsService {
           average,
           count: values.length,
           protected: values.some((rating) => rating >= threshold),
-          taggingExcluded: Boolean(override?.taggingExcluded),
+          taggingExcluded:
+            supportsTagSync(mediaType) && Boolean(override?.taggingExcluded),
           lowRated: this.isLowRated(values, lowRatedSettings),
           available: isAvailable,
           updatedAt,
@@ -303,6 +313,8 @@ export class RatingsService {
     const threshold = await this.getProtectionThreshold();
     const lowRatedSettings = await this.getLowRatedSettings();
     const override = await this.getMediaOverride(ratingKey);
+    const mediaType =
+      ratings.find((rating) => rating.mediaType)?.mediaType ?? "movie";
 
     return {
       ratingKey,
@@ -310,8 +322,7 @@ export class RatingsService {
         ratings.find((rating) => rating.displayTitle)?.displayTitle ??
         ratings.find((rating) => rating.title)?.title ??
         null,
-      mediaType:
-        ratings.find((rating) => rating.mediaType)?.mediaType ?? "movie",
+      mediaType,
       posterUrl: this.posterUrl(ratingKey, ratings),
       highest: values.length > 0 ? Math.max(...values) : null,
       average:
@@ -320,7 +331,7 @@ export class RatingsService {
           : null,
       count: values.length,
       protected: values.some((rating) => rating >= threshold),
-      taggingExcluded: override.taggingExcluded,
+      taggingExcluded: supportsTagSync(mediaType) && override.taggingExcluded,
       lowRated: this.isLowRated(values, lowRatedSettings),
       updatedAt:
         ratings.length > 0
@@ -475,8 +486,13 @@ export class RatingsService {
       ratedMedia,
       unratedMedia,
       protectedMedia,
-      excludedMedia: [...grouped.keys()].filter((key) => excludedKeys.has(key))
-        .length,
+      excludedMedia: [...grouped.entries()].filter(
+        ([key, ratings]) =>
+          excludedKeys.has(key) &&
+          supportsTagSync(
+            ratings.find((rating) => rating.mediaType)?.mediaType,
+          ),
+      ).length,
       linkedUsers: linkedUsers.length,
       lastUpdatedAt: cachedRatings[0]?.updatedAt ?? null,
       protectionThreshold: await this.getProtectionThreshold(),
@@ -487,9 +503,7 @@ export class RatingsService {
     const configured = await this.settings.get(
       RATING_PROTECTION_THRESHOLD_SETTING,
     );
-    const fallback = this.config.getOrThrow<number>(
-      "ratings.protectionThreshold",
-    );
+    const fallback = 7;
     const value = Number(configured ?? fallback);
 
     return Number.isFinite(value) ? value : fallback;
@@ -586,8 +600,9 @@ export class RatingsService {
       return [];
     }
 
-    return (await this.listFavorites(1000)).filter((media) =>
-      excludedKeys.has(media.ratingKey),
+    return (await this.listFavorites(1000)).filter(
+      (media) =>
+        supportsTagSync(media.mediaType) && excludedKeys.has(media.ratingKey),
     );
   }
 
@@ -631,6 +646,14 @@ export class RatingsService {
     ratingKey: string,
     taggingExcluded: boolean,
   ): Promise<MediaOverride> {
+    const rating = await this.userRatings.findOne({ where: { ratingKey } });
+
+    if (!supportsTagSync(rating?.mediaType)) {
+      throw new BadRequestException(
+        "Only movies and shows can be excluded from tag sync.",
+      );
+    }
+
     const existing = await this.mediaOverrides.findOne({
       where: { ratingKey },
     });
@@ -679,6 +702,17 @@ export class RatingsService {
     }
 
     for (const ratings of grouped.values()) {
+      const mediaType = ratings.find((rating) => rating.mediaType)?.mediaType;
+
+      if (mediaType === "season" || mediaType === "episode") {
+        if (debug) {
+          this.logger.debug(
+            `Tag sync ignored ${ratings[0]?.ratingKey}: ${mediaType} ratings do not affect Sonarr series tags.`,
+          );
+        }
+        continue;
+      }
+
       const values = ratings
         .filter((rating) => rating.rating !== null)
         .map((rating) => rating.rating as number);
@@ -970,11 +1004,7 @@ export class RatingsService {
       return;
     }
 
-    if (
-      mediaType === "show" ||
-      mediaType === "season" ||
-      mediaType === "episode"
-    ) {
+    if (mediaType === "show") {
       if (protectedSettings?.enabled ?? true) {
         await this.sonarr.syncProtectedTag(
           tvdbId,

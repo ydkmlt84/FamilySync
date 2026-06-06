@@ -14,39 +14,53 @@ FamilySync therefore stores the server-specific Plex resource token in `LinkedUs
 
 ## Configuration
 
-Copy `.env.example` to `.env` and set at least:
+The only required setting is the database encryption key. Copy `.env.example`
+to `.env` and set:
 
 ```powershell
-PLEX_BASE_URL=https://your-plex-direct-url:32400
-PUBLIC_URL=http://localhost:5174
-SETUP_TOKEN=a-random-secret-with-at-least-32-characters
-APP_ENCRYPTION_KEY=a-separate-random-secret-with-at-least-32-characters
+APP_ENCRYPTION_KEY=a-random-secret-with-at-least-32-characters
 ```
 
-`SETUP_TOKEN` protects a fresh instance from being claimed by an unauthorized
-Plex server owner. Enter it in the initial setup field before linking the first
-administrator. FamilySync permanently disables setup-token use after the
-instance is initialized. Existing installations with an administrator are
-recognized automatically. As an alternative, preconfigure the trusted account
-with `PLEX_ADMIN_USER_ID`.
+Generate one on Windows or Linux with Docker:
+
+```powershell
+docker run --rm node:24-alpine node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"
+```
+
+Copy the printed value into `APP_ENCRYPTION_KEY`. Everything else — the Plex
+server connection, libraries, Radarr/Sonarr, and rating thresholds — is
+configured in the first-run setup wizard and the in-app admin settings.
 
 `APP_ENCRYPTION_KEY` encrypts Plex tokens and Radarr/Sonarr settings in SQLite
 using AES-256-GCM. Existing plaintext values are migrated automatically at
 startup. Back up this key separately: losing or changing it makes stored
-secrets unrecoverable. Generate independent setup and encryption secrets; do
-not reuse the same value.
+secrets unrecoverable.
+
+For HTTPS deployments, set `PUBLIC_URL` to the externally visible HTTPS URL.
+FamilySync then marks its session cookie `Secure`. When TLS terminates at a
+reverse proxy, `COOKIE_SECURE=true` can explicitly enforce this behavior and
+`TRUST_PROXY=true` trusts the first proxy's forwarded headers.
 
 To rotate the key, set the new value as `APP_ENCRYPTION_KEY` and temporarily
 set the old value as `APP_ENCRYPTION_KEY_PREVIOUS`. Start FamilySync once to
 re-encrypt stored secrets, then remove `APP_ENCRYPTION_KEY_PREVIOUS`. Back up
 the database before rotating.
 
-Server selection:
+### First-run setup wizard
 
-- Preferred: set `PLEX_SERVER_IDENTIFIER` to the Plex server `clientIdentifier`.
-- Or: link the Plex server admin account first. FamilySync will persist that admin-owned server identifier and require all future linked users to have access to that same server.
+On first launch FamilySync shows a setup wizard:
 
-If an admin account owns multiple Plex servers and `PLEX_SERVER_IDENTIFIER` is not set, linking fails until the target server is configured.
+1. **Link Plex** — sign in with the Plex account that _owns_ the server you want
+   FamilySync to manage. The first owner to link becomes the administrator; a
+   non-owner cannot claim the instance. (There is no setup token — the
+   Plex-ownership check is the gate.)
+2. **Choose server connection** — FamilySync auto-discovers the server's Plex
+   connection URLs. Pick one (or enter a URL manually), test it, and save. That
+   URL is stored in the database and used for all Plex Media Server calls.
+
+The selected server identifier is persisted, so every future linked user must
+have access to that same server. If the owner account owns more than one Plex
+server, choosing among them is not yet supported.
 
 Admin access is based on the linked Plex account. The Plex server admin account can manage linked users, choose Plex movie and TV libraries, configure Radarr/Sonarr connections, and force sync; non-admin linked users can view cached rated media.
 
@@ -61,9 +75,9 @@ data/
     familysync.log
 ```
 
-Set `CONFIG_DIR` to move both defaults, or override `DATABASE_PATH` and
-`LOG_PATH` individually. Logs are written to both stdout and rotating files.
-Five 5 MB rotated files are retained.
+Set `CONFIG_DIR` to move both defaults in non-Docker installations. The Docker
+image uses `/config` automatically. Logs are written to both stdout and
+rotating files. Five 5 MB rotated files are retained.
 
 Plex metadata refresh is enabled weekly by default at 4:00 AM Sunday. It
 refreshes cached titles, posters, season/episode indexes, and external IDs
@@ -77,7 +91,7 @@ yarn install
 yarn dev
 ```
 
-API: `http://localhost:3000/api`
+API: `http://localhost:6614/api`
 
 Web UI: `http://localhost:5174`
 
@@ -90,6 +104,25 @@ yarn dev:server
 ```powershell
 yarn dev:web
 ```
+
+### Reset The Setup Wizard
+
+To test first-run setup again, stop the development server and run:
+
+```powershell
+yarn dev:reset
+```
+
+Type `reset` when prompted. The command moves the current SQLite database and
+any WAL sidecars into `data/backups` with a timestamp, then the setup wizard
+runs when FamilySync starts again. For automated local testing:
+
+```powershell
+yarn dev:reset --yes
+```
+
+The command refuses `NODE_ENV=production` and database paths outside the
+workspace by default.
 
 ### Quality Checks
 
@@ -142,11 +175,15 @@ POST /api/sync/metadata
 
 ```powershell
 Copy-Item .env.example .env
-docker compose up --build
+# set APP_ENCRYPTION_KEY in .env, then:
+docker compose up -d
 ```
 
-The container sets `CONFIG_DIR=/config`. SQLite and rotating logs are persisted
-in the `familysync-config` volume:
+`docker-compose.yml` pulls the published image
+(`ghcr.io/ydkmlt84/familysync:main`); to build locally instead, comment out
+`image:` and uncomment `build: .`. FamilySync listens on port `6614`. The
+Docker image stores runtime data in `/config` automatically, and SQLite plus
+rotating logs are persisted in the mounted volume:
 
 ```text
 /config/familysync.sqlite

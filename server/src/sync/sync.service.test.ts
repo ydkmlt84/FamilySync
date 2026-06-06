@@ -60,7 +60,12 @@ describe("SyncService settings and libraries", () => {
     await expect(
       service.setSelectedTvLibraryKeys(["3", "3", "4"]),
     ).resolves.toEqual(["3", "4"]);
-    expect(settings.setJson).toHaveBeenCalledTimes(2);
+    await expect(service.setSelectedMovieLibraryKeys([])).resolves.toEqual([]);
+    expect(settings.setJson).toHaveBeenLastCalledWith(
+      "plex.selectedMovieLibraryKeys",
+      ["__none__"],
+    );
+    expect(settings.setJson).toHaveBeenCalledTimes(3);
   });
 
   it("returns and updates job settings", async () => {
@@ -111,6 +116,40 @@ describe("SyncService settings and libraries", () => {
       processedMovies: 2,
       syncedMovies: 2,
     });
+  });
+
+  it("processes full sync items with bounded concurrency", async () => {
+    let active = 0;
+    let maximum = 0;
+    const aggregate = vi.fn().mockImplementation(async () => {
+      active += 1;
+      maximum = Math.max(maximum, active);
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      active -= 1;
+    });
+    const user = { plexToken: "token", isAdmin: true, plexUsername: "Owner" };
+    const { service, plex, users } = makeService({
+      ratings: {
+        isDebugLogging: vi.fn().mockResolvedValue(false),
+        hasFreshCacheForAllUsers: vi.fn().mockResolvedValue(false),
+        aggregate,
+      },
+      users: {
+        listEnabled: vi.fn().mockResolvedValue([user]),
+        markSynced: vi.fn(),
+      },
+    });
+    users.listEnabled.mockResolvedValue([user]);
+    plex.listMediaRatingKeys.mockResolvedValue(
+      Array.from({ length: 12 }, (_, index) => String(index)),
+    );
+
+    const job = service.startFullSync();
+    await vi.waitFor(() => expect(job.status).toBe("completed"));
+
+    expect(aggregate).toHaveBeenCalledTimes(12);
+    expect(maximum).toBe(4);
+    expect(job.processedMovies).toBe(12);
   });
 
   it("lists libraries and refreshes selected media", async () => {
