@@ -34,12 +34,15 @@ describe("SecretEncryptionService", () => {
     );
 
     const encrypted = makeService("a".repeat(32)).encrypt("secret") as string;
+    const tampered = `${encrypted.slice(0, -1)}${
+      encrypted.endsWith("x") ? "y" : "x"
+    }`;
     expect(() => makeService("b".repeat(32)).decrypt(encrypted)).toThrow(
       "Verify APP_ENCRYPTION_KEY",
     );
-    expect(() =>
-      makeService("a".repeat(32)).decrypt(`${encrypted.slice(0, -1)}x`),
-    ).toThrow("Verify APP_ENCRYPTION_KEY");
+    expect(() => makeService("a".repeat(32)).decrypt(tampered)).toThrow(
+      "Verify APP_ENCRYPTION_KEY",
+    );
   });
 
   it("supports one-step key rotation", () => {
