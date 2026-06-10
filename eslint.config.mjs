@@ -24,13 +24,13 @@ export default tseslint.config(
     },
   },
   {
-    files: ["server/src/**/*.ts"],
+    files: ["app/server/src/**/*.ts"],
     languageOptions: {
       globals: globals.node,
     },
   },
   {
-    files: ["web/src/**/*.{ts,tsx}"],
+    files: ["app/ui/src/**/*.{ts,tsx}"],
     languageOptions: {
       globals: globals.browser,
     },

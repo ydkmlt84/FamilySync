@@ -2,6 +2,20 @@
 
 FamilySync is a standalone self-hosted companion application for Maintainerr. It lets Plex users voluntarily link their account so FamilySync can collect each user's Plex `userRating`, aggregate those ratings, and optionally tag protected movies in Radarr or protected series in Sonarr. It uses SQLite through `better-sqlite3`.
 
+## Project structure
+
+```text
+app/
+  server/
+    src/
+  ui/
+    src/
+      components/
+```
+
+The NestJS API lives in `app/server/src`. The React application lives in
+`app/ui/src`, with reusable UI sections under `app/ui/src/components`.
+
 ## Proof Confirmed
 
 The initial POC confirmed the required Plex behavior:
@@ -91,9 +105,9 @@ yarn install
 yarn dev
 ```
 
-API: `http://localhost:6614/api`
+Internal development API: `http://localhost:3000/api`
 
-Web UI: `http://localhost:5174`
+Web UI: `http://localhost:6614`
 
 Or run the development servers in separate terminals:
 

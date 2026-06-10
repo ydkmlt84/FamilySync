@@ -5,13 +5,14 @@ import { defineConfig } from "vite";
 export default defineConfig({
   plugins: [react(), tailwindcss()],
   server: {
-    port: 5174,
+    port: 6614,
+    strictPort: true,
     proxy: {
-      "/api": "http://localhost:6614",
+      "/api": "http://localhost:3000",
     },
   },
   build: {
-    outDir: "dist/web",
+    outDir: "dist/ui",
     emptyOutDir: true,
   },
 });

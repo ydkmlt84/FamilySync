@@ -1,8 +1,0 @@
-{
-  "extends": "../tsconfig.json",
-  "compilerOptions": {
-    "lib": ["DOM", "DOM.Iterable", "ES2022"],
-    "types": ["vite/client", "vitest/globals", "@testing-library/jest-dom"]
-  },
-  "include": ["src/**/*.ts", "src/**/*.tsx"]
-}
